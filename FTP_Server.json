@@ -1,0 +1,512 @@
+{
+    "AWSTemplateFormatVersion" : "2010-09-09",
+    
+    "Description" : "Plantilla para servidor FTP con un S3 para respaldo.",
+    
+    "Parameters" : {
+        
+      "KeyName" : {
+        "Description" : "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+        "Type" : "String"
+      },    
+  
+      "AdminUser" : {
+        "Description" : "FTPServer Admin Username",
+        "Type" : "String"
+      },
+      
+      "AdminPassword" : {
+        "Description" : "FTPServer Admin Password",
+        "Type" : "String",
+        "NoEcho" : "True"
+      },
+  
+      "HostedZone" : {
+        "Type" : "String",
+        "Description" : "The DNS name of an existing Amazon Route 53 hosted zone"
+      },
+  
+      "DNSName" : {
+        "Type" : "String",
+        "Default" : "ftp",
+        "Description" : "The DNS name of the FTPServer within the HostedZone specified"
+      },
+      
+      "InstanceType" : {
+        "Description" : "FTPServer EC2 instance type",
+        "Type" : "String",
+        "Default" : "t1.micro",
+        "AllowedValues" : [ "t1.micro", "m1.small", "m1.medium", "m1.large", "m1.xlarge", "m2.xlarge", "m2.2xlarge", "m2.4xlarge", "c1.medium", "c1.xlarge", "cc1.4xlarge" ]
+      },
+  
+      "FTPServerMinPort" : {
+        "Description" : "FTPServer start of port range for passive mode (1024 to 65535)",
+        "Type" : "Number",
+        "MinValue" : "1024",
+        "MaxValue" : "65535",
+        "Default"  : "8080"
+      },
+  
+      "FTPServerMaxPort" : {
+        "Description" : "FTPServer end of port range for passive mode (1024 to 65535)",
+        "Type" : "Number",
+        "MinValue" : "1024",
+        "MaxValue" : "65535",
+        "Default"  : "8080"
+        }
+    },
+    
+    "Mappings" : {
+      "AWSInstanceType2Arch" : {
+        "t1.micro"    : { "Arch" : "64" },
+        "m1.small"    : { "Arch" : "64" },
+        "m1.medium"   : { "Arch" : "64" },
+        "m1.large"    : { "Arch" : "64" },
+        "m1.xlarge"   : { "Arch" : "64" },
+        "m2.xlarge"   : { "Arch" : "64" },
+        "m2.2xlarge"  : { "Arch" : "64" },
+        "m2.4xlarge"  : { "Arch" : "64" },
+        "c1.medium"   : { "Arch" : "64" },
+        "c1.xlarge"   : { "Arch" : "64" },
+        "cc1.4xlarge" : { "Arch" : "64HVM" },
+        "cc2.8xlarge" : { "Arch" : "64HVM" },
+        "cg1.4xlarge" : { "Arch" : "64HVM" }
+      },
+  
+      "AWSRegionArch2AMI" : {
+        "us-east-1"      : { "32" : "ami-31814f58", "64" : "ami-1b814f72", "64HVM" : "ami-0da96764" },
+        "us-west-2"      : { "32" : "ami-38fe7308", "64" : "ami-30fe7300", "64HVM" : "NOT_YET_SUPPORTED" },
+        "us-west-1"      : { "32" : "ami-11d68a54", "64" : "ami-1bd68a5e", "64HVM" : "NOT_YET_SUPPORTED" },
+        "eu-west-1"      : { "32" : "ami-973b06e3", "64" : "ami-953b06e1", "64HVM" : "NOT_YET_SUPPORTED" },
+        "ap-southeast-1" : { "32" : "ami-b4b0cae6", "64" : "ami-beb0caec", "64HVM" : "NOT_YET_SUPPORTED" },
+        "ap-northeast-1" : { "32" : "ami-0644f007", "64" : "ami-0a44f00b", "64HVM" : "NOT_YET_SUPPORTED" },
+        "sa-east-1"      : { "32" : "ami-3e3be423", "64" : "ami-3c3be421", "64HVM" : "NOT_YET_SUPPORTED" }
+      }
+    },
+      
+    "Resources" : {     
+        
+      "CfnUser" : {
+        "Type" : "AWS::IAM::User",
+        "Properties" : {
+          "Path": "/",
+          "Policies": [{
+            "PolicyName": "root",
+            "PolicyDocument": { "Statement":[{
+              "Effect":"Allow",
+              "Action":"cloudformation:DescribeStackResource",
+              "Resource":"*"
+            }]}
+          }]
+        }
+      },
+  
+      "HostKeys" : {
+        "Type" : "AWS::IAM::AccessKey",
+        "Properties" : {
+          "UserName" : {"Ref": "CfnUser"}
+        }
+      },
+  
+      "S3Bucket" : {
+        "Type" : "AWS::S3::Bucket",
+        "DeletionPolicy" : "Retain"
+      },
+  
+      "BucketPolicy" : {
+        "Type" : "AWS::S3::BucketPolicy",
+        "Properties" : {
+          "PolicyDocument": {
+            "Version"      : "2008-10-17",
+            "Id"           : "UploadPolicy",
+            "Statement"    : [{
+              "Sid"        : "EnableReadWrite",
+              "Action"     : ["s3:GetObject", "s3:PutObject", "s3:PutObjectACL" ],
+              "Effect"     : "Allow",
+              "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", {"Ref" : "S3Bucket"} , "/*"]]},
+              "Principal"  : { "AWS": {"Fn::GetAtt" : ["S3User", "Arn"]} }
+            }]
+          },
+          
+          "Bucket" : {"Ref" : "S3Bucket"}
+        }
+      },
+  
+      "S3User" : {
+        "Type" : "AWS::IAM::User",
+        "Properties" : {
+          "Path": "/",
+          "Policies": [{
+            "PolicyName": "root",
+            "PolicyDocument": { "Statement":[{
+              "Effect":"Allow",
+              "Action":"s3:*",
+              "Resource":"*"
+            }]}
+          }]
+        }
+      },
+  
+      "S3Keys" : {
+        "Type" : "AWS::IAM::AccessKey",
+        "Properties" : {
+          "UserName" : {"Ref": "S3User"}
+        }
+      },
+   
+      "FTPDNSEntry" : {
+        "Type" : "AWS::Route53::RecordSet",
+        "Properties" : {
+          "HostedZoneName" : { "Fn::Join" : [ "", [{"Ref" : "HostedZone"}, "." ]]},
+          "Comment" : "FTP Server.",
+          "Name" : { "Fn::Join" : [ "", [{"Ref" : "DNSName"}, ".", {"Ref" : "HostedZone"} ,"."]]},
+          "Type" : "A",
+          "TTL" : "900",
+          "ResourceRecords" : [ { "Ref" : "FTPServerAddress" } ]
+        }
+      },
+  
+      "FTPServerAddress": {
+        "Type" : "AWS::EC2::EIP"
+      },
+  
+      "FTPEIPAssoc" : {
+        "Type" : "AWS::EC2::EIPAssociation",
+        "Properties" : {
+          "InstanceId" : { "Ref" : "FTPServer" },
+          "EIP" : { "Ref" : "FTPServerAddress" }
+        }
+      },
+    
+      "FTPServer": {  
+        "Type" : "AWS::EC2::Instance",
+        "Metadata" : {
+          "AWS::CloudFormation::Init" : {
+  
+            "configSets" : {
+              "fullinstall" : [ "install_s3fs", "install_ftp", "mount_s3_for_ftp" ]
+            },
+  
+            "install_s3fs" : {
+              "packages" : {
+                "yum" : {
+                  "gcc"             : [],
+                  "make"            : [],
+                  "libstdc++-devel" : [],
+                  "gcc-c++"         : [],
+                  "fuse"            : [],
+                  "fuse-devel"      : [],
+                  "libcurl-devel"   : [],
+                  "libxml2-devel"   : [],
+                  "openssl-devel"   : [],
+                  "mailcap"         : []
+                }
+              },
+  
+              "sources" : {
+                "/home/ec2-user/s3fs" : "http://s3fs.googlecode.com/files/s3fs-1.61.tar.gz"
+              },
+  
+              "files" : {
+                "/etc/passwd-s3fs" : {
+                  "content" : { "Fn::Join" : ["", [ { "Ref" : "S3Keys" }, ":", {"Fn::GetAtt": ["S3Keys", "SecretAccessKey"]}, "\n" ]]},
+                  "mode"  : "000400",
+                  "owner" : "root",
+                  "group" : "root"
+                },
+  
+                "/home/ec2-user/make-s3fs" : {
+                  "content" : { "Fn::Join" : ["", [ 
+                    "# Install s3fs\n",
+                    "cd /home/ec2-user/s3fs/s3fs-1.61\n",
+                    "./configure --prefix=/usr\n",
+                    "make\n",
+                    "make install\n"
+                  ]]},
+
+                  "mode"  : "000700",
+                  "owner" : "root",
+                  "group" : "root"
+                }
+              },
+  
+              "commands" : {
+                "make_s3fs" : {
+                  "cwd"     : "/home/ec2-user",
+                  "command" : "/home/ec2-user/make-s3fs"
+                }
+              }
+            },
+  
+            "mount_s3_for_ftp" : {
+  
+              "files" : {
+  
+                "/home/ec2-user/mount-s3-bucket" : {
+                  "content" : { "Fn::Join" : ["", [ 
+                    "# Mount the S3 bucket\n",
+                    "mkdir -p /var/ftp/pub\n",
+                    "s3fs -o allow_other -o use_cache=/tmp ", { "Ref" : "S3Bucket" } ," /var/ftp/pub\n"
+                  ]]},
+
+                  "mode"  : "000700",
+                  "owner" : "root",
+                  "group" : "root"
+                }
+              },
+  
+              "commands" : {
+                "mount_s3" : {
+                  "cwd"     : "/home/ec2-user",
+                  "command" : "/home/ec2-user/mount-s3-bucket"
+                }
+              }
+            },
+  
+            "install_ftp" : {
+              "packages" : {
+                "yum" : {
+                  "vsftpd"          : []
+                },
+
+                "rpm" : {
+                  "Webmin" : "http://prdownloads.sourceforge.net/webadmin/webmin-1.580-1.noarch.rpm"
+                }
+              },
+  
+              "files" : {
+                "/home/ec2-user/vsftpd.tar.gz" : {
+                  "source" : "http://provider4u.de/images/downloads/vsftpd.tar.gz",
+                  "mode"   : "000400",
+                  "owner"  : "root",
+                  "group"  : "root"
+                },
+  
+                "/tmp/pwd" : {
+                  "content" : { "Fn::Join" : ["", [ 
+                    { "Ref" : "AdminPassword" }, "\n",
+                    { "Ref" : "AdminPassword" }, "\n"
+                  ]]},
+
+                  "mode"  : "000400",
+                  "owner" : "root",
+                  "group" : "root"
+                },
+  
+                "/tmp/createadmin" : {
+                  "content" : { "Fn::Join" : ["", [ 
+                    "# Create new user\n",
+                    "adduser --home /var/ftp ", { "Ref" : "AdminUser" }, "\n",
+                    "cat /tmp/pwd | passwd --stdin ", { "Ref" : "AdminUser" }, "\n",
+                    "rm /tmp/pwd\n",
+                    "# Register new user with WebMin\n",
+                    "mv /tmp/newrootuser.acl /etc/webmin/", { "Ref" : "AdminUser" }, ".acl\n",
+                    "sed -i 's/root:/", { "Ref" : "AdminUser" }, ":/g' /etc/webmin/webmin.acl\n",
+                    "sed -i 's/root:/", { "Ref" : "AdminUser" }, ":/g' /etc/webmin/miniserv.users\n",
+                    "# Register vsftpd WebMin plug-in\n",
+                    "cd /etc/webmin\n",
+                    "perl install-module.pl --acl ", { "Ref" : "AdminUser" }, " /home/ec2-user/vsftpd.tar.gz\n",
+                    "sed -i 's/vsftpd.conf/vsftpd\/vsftpd.conf/g' /etc/webmin/vsftpd/config\n"
+                  ]]},
+
+                  "mode"  : "000700",
+                  "owner" : "root",
+                  "group" : "root"
+                },
+  
+                "/etc/vsftpd/vsftpd.conf" : {
+                  "content" : { "Fn::Join" : ["", [ 
+                    "anonymous_enable=NO\n",
+                    "local_enable=YES\n",
+                    "write_enable=YES\n",
+                    "listen=YES\n",
+                    "local_umask=022\n",
+                    "dirmessage_enable=YES\n",
+                    "xferlog_enable=YES\n",
+                    "connect_from_port_20=YES\n",
+                    "xferlog_file=/var/log/vsftpd.log\n",
+                    "pam_service_name=vsftpd\n",
+                    "userlist_enable=YES\n",
+                    "tcp_wrappers=YES\n",
+                    "pasv_min_port=", {"Ref" : "FTPServerMinPort"} ,"\n",
+                    "pasv_max_port=", {"Ref" : "FTPServerMaxPort"} ,"\n",
+                    "pasv_address=", {"Ref" : "FTPServerAddress"}, "\n",
+                    "chroot_local_user=YES\n",
+                    "chroot_list_enable=YES\n",
+                    "chroot_list_file=/etc/vsftpd/chmod_user_list\n"
+                  ]]},
+
+                  "mode"  : "000600",
+                  "owner" : "root",
+                  "group" : "root"
+                },
+  
+                "/etc/vsftpd/chmod_user_list" : {
+                  "content" : { "Fn::Join" : ["\n", [ 
+                    { "Ref" : "AdminUser" }
+                  ]]},
+                  "mode"  : "000600",
+                  "owner" : "root",
+                  "group" : "root"
+                },
+  
+                "/etc/webmin/miniserv.conf" : {
+                  "content" : { "Fn::Join" : ["\n", [ 
+                    "port=80",
+                    "root=/usr/libexec/webmin",
+                    "mimetypes=/usr/libexec/webmin/mime.types",
+                    "addtype_cgi=internal/cgi",
+                    "realm=Webmin Server",
+                    "logfile=/var/webmin/miniserv.log",
+                    "errorlog=/var/webmin/miniserv.error",
+                    "pidfile=/var/webmin/miniserv.pid",
+                    "logtime=168",
+                    "ppath=",
+                    "ssl=0",
+                    "env_WEBMIN_CONFIG=/etc/webmin",
+                    "env_WEBMIN_VAR=/var/webmin",
+                    "atboot=1",
+                    "logout=/etc/webmin/logout-flag",
+                    "listen=80",
+                    "log=1",
+                    "blockhost_failures=5",
+                    "blockhost_time=60",
+                    "syslog=1",
+                    "session=1",
+                    "premodules=WebminCore",
+                    "server=MiniServ/1.580",
+                    "userfile=/etc/webmin/miniserv.users",
+                    "keyfile=/etc/webmin/miniserv.pem",
+                    "passwd_file=/etc/shadow",
+                    "passwd_uindex=0",
+                    "passwd_pindex=1",
+                    "passwd_cindex=2",
+                    "passwd_mindex=4",
+                    "passwd_mode=0",
+                    "preroot=blue-theme",
+                    "passdelay=1"
+                  ]]},
+
+                  "mode"  : "000600",
+                  "owner" : "root",
+                  "group" : "root"
+                },
+  
+                "/etc/webmin/install-module.pl" : {
+                  "source" : "https://raw.github.com/webmin/webmin/master/install-module.pl",
+                  "mode"   : "000600",
+                  "owner"  : "root",
+                  "group"  : "root"
+                },
+  
+                "/tmp/newrootuser.acl" : {
+                  "content" : { "Fn::Join" : ["\n", [
+                    "rpc=2",
+                    "nodot=0",
+                    "webminsearch=1",
+                    "uedit_mode=0",
+                    "gedit_mode=0",
+                    "feedback=2",
+                    "otherdirs=",
+                    "readonly=0",
+                    "fileunix=root",
+                    "uedit=",
+                    "negative=0",
+                    "root=/",
+                    "uedit2=",
+                    "gedit=",
+                    "gedit2="
+                  ]]},
+
+                  "mode"  : "000600",
+                  "owner" : "root",
+                  "group" : "root"
+                }
+              },
+  
+              "services" : {
+                "sysvinit" : {  
+                  "vsftpd"   : { "enabled" : "true", "ensureRunning" : "true", "files" : ["/etc/vsftpd/vsftpd.conf"] },
+                  "webmin"   : { "enabled" : "true", "ensureRunning" : "true", "files" : ["/etc/webmin/miniserv.conf"] }
+                }
+              },
+  
+              "commands" : {
+                "create_admin" : {
+                  "cwd" : "/etc/webmin",
+                  "command" : "/tmp/createadmin"
+                }
+              }
+            }
+          }
+        },
+
+        "Properties": {
+          "ImageId" : { "Fn::FindInMap" : [ "AWSRegionArch2AMI", { "Ref" : "AWS::Region" }, { "Fn::FindInMap" : [ "AWSInstanceType2Arch", { "Ref" : "InstanceType" }, "Arch" ] } ] }, 
+          "InstanceType"   : { "Ref" : "InstanceType" },
+          "SecurityGroups" : [ {"Ref" : "FTPServerSecurityGroup"} ],
+          "KeyName"        : { "Ref" : "KeyName" },
+          "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+            "#!/bin/bash -v\n",
+            "yum update -y aws-cfn-bootstrap\n",
+  
+            "# Install FTP Server\n",
+            "/opt/aws/bin/cfn-init ",
+            "    --stack ", { "Ref" : "AWS::StackName" },
+            "    --resource FTPServer ",
+            "    --access-key ",  { "Ref" : "HostKeys" },
+            "    --secret-key ", {"Fn::GetAtt": ["HostKeys", "SecretAccessKey"]},
+            "    --region ", { "Ref" : "AWS::Region" }, 
+            "    --configset fullinstall\n",
+  
+            "# All is well so signal success\n",
+            "/opt/aws/bin/cfn-signal -e $? -r \"FTP Server setup complete\" '", { "Ref" : "WaitHandle" }, "'\n"
+  
+          ]]}}        
+        }
+      },
+  
+      "WaitHandle" : {
+        "Type" : "AWS::CloudFormation::WaitConditionHandle"
+      },
+  
+      "WaitCondition" : {
+        "Type" : "AWS::CloudFormation::WaitCondition",
+        "DependsOn" : "FTPServer",
+        "Properties" : {
+          "Handle" : {"Ref" : "WaitHandle"},
+          "Timeout" : "600"
+        }
+      },
+      
+      "FTPServerSecurityGroup" : {
+        "Type" : "AWS::EC2::SecurityGroup",
+        "Properties" : {
+          "GroupDescription" : "Enable FTP access via port 21 and passive mode port range as well as SSH access",
+          "SecurityGroupIngress" : [
+            {"IpProtocol" : "tcp", "FromPort" : {"Ref" : "FTPServerMinPort"}, "ToPort" : {"Ref" : "FTPServerMaxPort"}, "CidrIp" : "0.0.0.0/0"},
+            {"IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0"},
+            {"IpProtocol" : "tcp", "FromPort" : "21", "ToPort" : "21", "CidrIp" : "0.0.0.0/0"},
+            {"IpProtocol" : "tcp", "FromPort" : "22", "ToPort" : "22", "CidrIp" : "0.0.0.0/0"}
+          ]
+        }      
+      }          
+    },
+    
+    "Outputs" : {
+      "FTPAdmin" : {
+        "Value" : { "Fn::Join" : ["", ["http://", { "Ref" : "FTPServerAddress" }]] },
+        "Description" : "FTP Server Administration tool"
+      },
+
+      "FTPServerDNSName" : {
+        "Value" : { "Ref" : "FTPDNSEntry" },
+        "Description" : "FTP Server DNS Name"
+      },
+
+      "FTPServerIPAddress" : {
+        "Value" : { "Ref" : "FTPServerAddress" },
+        "Description" : "FTP Server IP Address"
+      }
+    }
+  }
